@@ -1,5 +1,56 @@
 @import "tailwindcss";
 
+@theme {
+  --animate-shake: shake 0.35s ease-in-out;
+  --animate-pop-in: popIn 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+  --animate-pop-out: popOut 0.15s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+  --animate-star-bounce: starBounce 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
+  --animate-success-pulse: successPulse 0.4s ease-out forwards;
+  --animate-fade-in-up: fadeInUp 0.3s ease-out forwards;
+  --animate-fade-in: fadeIn 0.2s ease-out forwards;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-4px); }
+  40% { transform: translateX(4px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(3px); }
+}
+
+@keyframes popIn {
+  0% { opacity: 0; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.05); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes popOut {
+  0% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(0.85); }
+}
+
+@keyframes starBounce {
+  0% { transform: scale(0.5); opacity: 0; }
+  50% { transform: scale(1.1); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes successPulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.02); }
+  100% { transform: scale(1); }
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -11,6 +62,6 @@ body {
 }
 
 body {
-  background: #020617;
-  color: white;
+  background: #f8fafc;
+  color: #0f172a;
 }

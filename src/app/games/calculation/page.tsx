@@ -2,260 +2,409 @@
 
 import { useEffect, useState } from "react";
 
-import MathGrid from "@/games/calculation/components/MathGrid";
-import NumberBank from "@/games/calculation/components/NumberBank";
-import PuzzleHeader from "@/games/calculation/components/PuzzleHeader";
-import HintButton from "@/games/calculation/components/HintButton";
-import PuzzleResult from "@/games/calculation/components/PuzzleResult";
+import LevelSelect from "./components/LevelSelect";
+import PuzzleBoard, { NumberTile } from "./components/PuzzleBoard";
+import NumberTray from "./components/NumberTray";
+import LevelComplete from "./components/LevelComplete";
 
-import { Difficulty, MathPuzzle } from "@/games/calculation/types";
+import { useSound } from "./audio/useSound";
+import { generateLevelPuzzles } from "./data/puzzles";
+import { Puzzle, DifficultyCategory } from "./types/puzzle";
+import { CategoryProgress } from "./components/LevelSelect";
 
-import { generatePuzzle } from "@/games/calculation/logic/puzzleGenerator";
+type Screen = "levels" | "game" | "complete";
 
-import { getScore } from "@/games/calculation/logic/calculationLogic";
+function shuffle<T>(array: T[]): T[] {
+  const result = [...array];
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
 
-export default function CalculationPage() {
-  const [difficulty, setDifficulty] = useState<Difficulty>("easy");
-
-  const [puzzle, setPuzzle] = useState<MathPuzzle | null>(null);
-
-  const [selectedNumber, setSelectedNumber] = useState<number | null>(null);
-
+export default function CalculationGame() {
+  const [screen, setScreen] = useState<Screen>("levels");
+  
+  // Progression State
+  const [selectedCategory, setSelectedCategory] = useState<DifficultyCategory>("basic");
+  const [selectedLevel, setSelectedLevel] = useState(1);
+  const [progress, setProgress] = useState<Record<DifficultyCategory, CategoryProgress>>({
+    basic: { unlockedLevel: 1, stars: {} },
+    intermediate: { unlockedLevel: 0, stars: {} },
+    hard: { unlockedLevel: 0, stars: {} },
+  });
+  
+  // Game Session State
+  const [levelPuzzles, setLevelPuzzles] = useState<Puzzle[]>([]);
+  const [puzzleIndex, setPuzzleIndex] = useState(0);
   const [mistakes, setMistakes] = useState(0);
 
-  const [hints, setHints] = useState(0);
+  // Interaction State
+  const [selectedCellId, setSelectedCellId] = useState<string | null>(null);
+  const [placed, setPlaced] = useState<Record<string, NumberTile>>({});
+  const [shuffledTiles, setShuffledTiles] = useState<NumberTile[]>([]);
 
-  const [time, setTime] = useState(0);
+  // Animation States
+  const [isError, setIsError] = useState(false);
+  const [isSuccess, setIsSuccess] = useState(false);
+  const [removingCellId, setRemovingCellId] = useState<string | null>(null);
 
-  const [gameStarted, setGameStarted] = useState(false);
-
-  const [completed, setCompleted] = useState(false);
-
-  const [incorrectCells, setIncorrectCells] = useState<string[]>([]);
-
-  function startGame() {
-    const newPuzzle = generatePuzzle(difficulty);
-
-    setPuzzle(newPuzzle);
-    setSelectedNumber(null);
-    setMistakes(0);
-    setHints(0);
-    setTime(0);
-    setCompleted(false);
-    setIncorrectCells([]);
-    setGameStarted(true);
-  }
+  const {
+    muted,
+    toggleMute,
+    playTap,
+    playNumberPlace,
+    playCorrect,
+    playWrong,
+    playLevelComplete,
+    playPuzzleComplete,
+    playUnlock,
+    playButton,
+    playBack,
+    playReset,
+  } = useSound();
 
   useEffect(() => {
-    if (!gameStarted || completed) {
-      return;
-    }
-
-    const timer = setInterval(() => {
-      setTime((previous) => previous + 1);
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [gameStarted, completed]);
-
-  function handleCellClick(cellId: string) {
-    if (!puzzle || selectedNumber === null) {
-      return;
-    }
-
-    const cell = puzzle.cells.find((item) => item.id === cellId);
-
-    if (!cell || cell.fixed || cell.type !== "number") {
-      return;
-    }
-
-    const updatedCells = puzzle.cells.map((item) => {
-      if (item.id === cellId) {
-        return {
-          ...item,
-          value: selectedNumber,
-        };
+    const savedProgress = localStorage.getItem("crossmath-progress");
+    if (savedProgress) {
+      try {
+        setProgress(JSON.parse(savedProgress));
+      } catch (e) {}
+    } else {
+      // Migrate old progress if available
+      const savedLevel = localStorage.getItem("crossmath-unlocked-level");
+      const savedStars = localStorage.getItem("crossmath-stars");
+      if (savedLevel || savedStars) {
+        setProgress({
+          basic: {
+            unlockedLevel: savedLevel ? Number(savedLevel) : 1,
+            stars: savedStars ? JSON.parse(savedStars) : {},
+          },
+          intermediate: { unlockedLevel: 0, stars: {} },
+          hard: { unlockedLevel: 0, stars: {} },
+        });
       }
-
-      return item;
-    });
-
-    setPuzzle({
-      ...puzzle,
-      cells: updatedCells,
-    });
-
-    setSelectedNumber(null);
-
-    /*
-      For this first version,
-      check completion when all
-      number cells are filled.
-    */
-
-    const numberCells = updatedCells.filter((item) => item.type === "number");
-
-    const filled = numberCells.every((item) => typeof item.value === "number");
-
-    if (filled) {
-      setCompleted(true);
     }
-  }
+  }, []);
 
-  function handleHint() {
-    if (!puzzle) {
-      return;
+  const puzzle = levelPuzzles[puzzleIndex];
+
+  const startLevel = (category: DifficultyCategory, level: number) => {
+    setSelectedCategory(category);
+    setSelectedLevel(level);
+    
+    const generated = generateLevelPuzzles(category, level);
+    setLevelPuzzles(generated);
+    setPuzzleIndex(0);
+    
+    const firstPuzzle = generated[0];
+    const tiles: NumberTile[] = firstPuzzle.tray.map((val, index) => ({
+      id: `tile-${index}`,
+      value: val,
+    }));
+    
+    setShuffledTiles(shuffle(tiles));
+    setPlaced({});
+    setSelectedCellId(null);
+    setMistakes(0);
+    setIsError(false);
+    setIsSuccess(false);
+    setRemovingCellId(null);
+    setScreen("game");
+  };
+
+  const resetPuzzle = () => {
+    if (!puzzle) return;
+    const tiles: NumberTile[] = puzzle.tray.map((val, index) => ({
+      id: `tile-${index}`,
+      value: val,
+    }));
+    setShuffledTiles(shuffle(tiles));
+    setPlaced({});
+    setSelectedCellId(null);
+    setIsError(false);
+    setIsSuccess(false);
+    setRemovingCellId(null);
+  };
+
+  const checkEquation = (values: number[], operator: string) => {
+    if (values.some((v) => v === undefined)) return null;
+
+    const [a, b] = values;
+    switch (operator) {
+      case "+": return a + b;
+      case "-": return a - b;
+      case "×": return a * b;
+      case "÷":
+        if (b === 0) return null;
+        return a / b;
+      default:
+        return null;
     }
+  };
 
-    const emptyCell = puzzle.cells.find(
-      (cell) => cell.type === "number" && !cell.fixed && cell.value === null,
-    );
+  const validatePuzzle = (nextPlaced: Record<string, NumberTile>) => {
+    if (!puzzle) return false;
+    const values: Record<string, number> = {};
 
-    if (!emptyCell) {
-      return;
-    }
-
-    setHints((previous) => previous + 1);
-
-    setPuzzle({
-      ...puzzle,
-      cells: puzzle.cells.map((cell) => {
-        if (cell.id === emptyCell.id) {
-          return {
-            ...cell,
-            value: cell.answer ?? puzzle.numberBank[0],
-          };
+    puzzle.cells.forEach((cell) => {
+      if (cell.type === "number") {
+        if (cell.fixed) {
+          values[cell.id] = cell.value as number;
+        } else if (nextPlaced[cell.id] !== undefined) {
+          values[cell.id] = nextPlaced[cell.id].value;
         }
-
-        return cell;
-      }),
+      }
     });
+
+    const complete = puzzle.cells
+      .filter((c) => c.type === "number" && !c.fixed)
+      .every((c) => nextPlaced[c.id] !== undefined);
+    
+    if (!complete) return false;
+
+    for (const eq of puzzle.equations) {
+      const v1 = values[eq.cells[0]];
+      const op = puzzle.cells.find(c => c.id === eq.cells[1])?.value as string;
+      const v2 = values[eq.cells[2]];
+      const res = values[eq.cells[4]];
+
+      const calculated = checkEquation([v1, v2], op);
+      if (calculated !== res) return false;
+    }
+
+    return true;
+  };
+
+  const handleTileClick = (tile: NumberTile) => {
+    if (!selectedCellId || !puzzle || isSuccess || isError) return;
+
+    const nextPlaced = {
+      ...placed,
+      [selectedCellId]: tile,
+    };
+
+    setPlaced(nextPlaced);
+    setSelectedCellId(null);
+
+    const allFilled = puzzle.cells
+      .filter((cell) => cell.type === "number" && !cell.fixed)
+      .every((cell) => nextPlaced[cell.id] !== undefined);
+
+    if (allFilled) {
+      const correct = validatePuzzle(nextPlaced);
+      if (correct) {
+        playCorrect();
+        setIsSuccess(true);
+        setTimeout(() => {
+          if (puzzleIndex < 9) {
+            playPuzzleComplete();
+            const nextIdx = puzzleIndex + 1;
+            const nextPuz = levelPuzzles[nextIdx];
+            setPuzzleIndex(nextIdx);
+            
+            const tiles: NumberTile[] = nextPuz.tray.map((val, index) => ({
+              id: `tile-${index}`,
+              value: val,
+            }));
+            setShuffledTiles(shuffle(tiles));
+            setPlaced({});
+            setIsSuccess(false);
+          } else {
+            completeLevel();
+          }
+        }, 600);
+      } else {
+        playWrong();
+        setIsError(true);
+        setMistakes((value) => value + 1);
+        setTimeout(() => {
+          setPlaced({});
+          setIsError(false);
+        }, 350);
+      }
+    } else {
+      playNumberPlace();
+    }
+  };
+
+  const handleCellClick = (cellId: string) => {
+    if (isSuccess || isError) return;
+
+    if (placed[cellId] !== undefined) {
+      playNumberPlace();
+      setRemovingCellId(cellId);
+      setSelectedCellId(null);
+      
+      setTimeout(() => {
+        const nextPlaced = { ...placed };
+        delete nextPlaced[cellId];
+        setPlaced(nextPlaced);
+        setRemovingCellId(null);
+      }, 150);
+    } else {
+      playTap();
+      setSelectedCellId(selectedCellId === cellId ? null : cellId);
+    }
+  };
+
+  const completeLevel = () => {
+    const earnedStars = mistakes === 0 ? 3 : mistakes <= 2 ? 2 : 1;
+    
+    const nextProgress = JSON.parse(JSON.stringify(progress)) as Record<DifficultyCategory, CategoryProgress>;
+    const currentCatProgress = nextProgress[selectedCategory];
+    
+    if (!currentCatProgress.stars[selectedLevel] || currentCatProgress.stars[selectedLevel] < earnedStars) {
+      currentCatProgress.stars[selectedLevel] = earnedStars;
+    }
+
+    const nextLevel = Math.max(currentCatProgress.unlockedLevel, selectedLevel + 1);
+    let unlockedNew = false;
+
+    if (nextLevel > 10) {
+      if (currentCatProgress.unlockedLevel < 10) unlockedNew = true;
+      currentCatProgress.unlockedLevel = 10;
+      
+      if (selectedCategory === "basic") {
+        if (nextProgress.intermediate.unlockedLevel < 1) unlockedNew = true;
+        nextProgress.intermediate.unlockedLevel = Math.max(1, nextProgress.intermediate.unlockedLevel);
+      } else if (selectedCategory === "intermediate") {
+        if (nextProgress.hard.unlockedLevel < 1) unlockedNew = true;
+        nextProgress.hard.unlockedLevel = Math.max(1, nextProgress.hard.unlockedLevel);
+      }
+    } else {
+      if (currentCatProgress.unlockedLevel < nextLevel) unlockedNew = true;
+      currentCatProgress.unlockedLevel = nextLevel;
+    }
+
+    if (unlockedNew) {
+      playUnlock();
+    } else {
+      playLevelComplete();
+    }
+
+    setProgress(nextProgress);
+    localStorage.setItem("crossmath-progress", JSON.stringify(nextProgress));
+
+    setIsSuccess(false);
+    setScreen("complete");
+  };
+
+  const goNextLevel = () => {
+    if (selectedLevel < 10) {
+      startLevel(selectedCategory, selectedLevel + 1);
+    } else {
+      // If completed level 10, go to next category
+      if (selectedCategory === "basic") startLevel("intermediate", 1);
+      else if (selectedCategory === "intermediate") startLevel("hard", 1);
+      else setScreen("levels");
+    }
+  };
+
+  const usedTileIds = new Set(Object.values(placed).map(tile => tile.id));
+
+  if (screen === "levels") {
+    return <LevelSelect progress={progress} onSelectLevel={startLevel} />;
   }
 
-  function changeDifficulty(level: Difficulty) {
-    setDifficulty(level);
-  }
-
-  if (!gameStarted) {
+  if (screen === "complete") {
     return (
-      <main className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
-        <div className="w-full max-w-xl">
-          <div className="text-center mb-10">
-            <div className="text-7xl mb-5">🧮</div>
-
-            <h1 className="text-4xl md:text-5xl font-black">Crossmath</h1>
-
-            <p className="text-slate-400 mt-3">Relax. Think. Feel Sharper.</p>
-          </div>
-
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-7">
-            <h2 className="text-xl font-bold mb-5">Choose Difficulty</h2>
-
-            <div className="grid grid-cols-3 gap-3">
-              {(["easy", "medium", "hard"] as Difficulty[]).map((level) => (
-                <button
-                  key={level}
-                  onClick={() => changeDifficulty(level)}
-                  className={`
-                      py-4
-                      rounded-xl
-                      font-bold
-                      capitalize
-                      transition
-
-                      ${
-                        difficulty === level
-                          ? "bg-blue-600 text-white"
-                          : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-                      }
-                    `}
-                >
-                  {level}
-                </button>
-              ))}
-            </div>
-
-            <div className="grid grid-cols-3 gap-3 mt-6">
-              <div className="bg-slate-800 rounded-xl p-4 text-center">
-                <div className="text-2xl">🧠</div>
-                <div className="text-sm text-slate-400 mt-2">Logic</div>
-              </div>
-
-              <div className="bg-slate-800 rounded-xl p-4 text-center">
-                <div className="text-2xl">🔢</div>
-                <div className="text-sm text-slate-400 mt-2">Math</div>
-              </div>
-
-              <div className="bg-slate-800 rounded-xl p-4 text-center">
-                <div className="text-2xl">🎯</div>
-                <div className="text-sm text-slate-400 mt-2">Focus</div>
-              </div>
-            </div>
-
-            <button
-              onClick={startGame}
-              className="w-full mt-7 py-4 rounded-xl bg-blue-600 hover:bg-blue-500 font-bold text-lg transition"
-            >
-              Start Puzzle
-            </button>
-          </div>
-        </div>
-      </main>
-    );
-  }
-
-  if (completed && puzzle) {
-    const score = getScore(mistakes, hints, time);
-
-    return (
-      <PuzzleResult
-        score={score}
+      <LevelComplete
+        level={selectedLevel}
         mistakes={mistakes}
-        hints={hints}
-        onPlayAgain={startGame}
+        onNext={goNextLevel}
+        onLevels={() => setScreen("levels")}
       />
     );
   }
 
-  if (!puzzle) {
-    return null;
-  }
+  if (!puzzle) return null;
 
   return (
-    <main className="min-h-screen bg-slate-950 text-white p-4 md:p-8">
-      <div className="max-w-3xl mx-auto">
-        <div className="text-center mb-6">
-          <h1 className="text-3xl md:text-4xl font-black">Crossmath</h1>
-
-          <p className="text-slate-400 mt-1">
-            Fill the puzzle using the numbers
-          </p>
+    <main className="min-h-screen bg-slate-50 flex flex-col items-center">
+      
+      <div className="w-full max-w-[480px] min-h-screen bg-white sm:shadow-2xl sm:min-h-0 sm:my-8 sm:rounded-[32px] overflow-hidden flex flex-col animate-fade-in-up">
+        
+        <div className="flex items-center justify-between px-4 py-4 border-b border-slate-100 bg-white sticky top-0 z-20">
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                playBack();
+                setScreen("levels");
+              }}
+              className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-50 text-slate-400 hover:bg-slate-100 hover:text-slate-600 active:scale-95 transition-all"
+              aria-label="Back to Levels"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+            <button
+              onClick={() => {
+                playButton();
+                toggleMute();
+              }}
+              className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-50 text-xl hover:bg-slate-100 hover:scale-105 active:scale-95 transition-all"
+              aria-label={muted ? "Enable sound" : "Mute sound"}
+            >
+              {muted ? "🔇" : "🔊"}
+            </button>
+          </div>
+          
+          <div className="flex flex-col items-center">
+            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
+              {selectedCategory} Level {selectedLevel}
+            </span>
+            <span className="text-sm font-bold text-slate-800 tracking-wide">
+              Puzzle {puzzleIndex + 1} / 10
+            </span>
+          </div>
+          
+          <button
+            onClick={() => {
+              playReset();
+              resetPuzzle();
+            }}
+            className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-50 text-slate-400 hover:bg-slate-100 hover:text-slate-600 active:scale-95 transition-all"
+            aria-label="Restart Puzzle"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
         </div>
 
-        <PuzzleHeader
-          difficulty={difficulty}
-          mistakes={mistakes}
-          hints={hints}
-          time={time}
-        />
+        <div className="h-1 w-full bg-slate-100">
+          <div 
+            className="h-full bg-blue-500 transition-all duration-500 ease-out" 
+            style={{ width: `${(puzzleIndex / 10) * 100}%` }} 
+          />
+        </div>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 md:p-8">
-          <MathGrid
+        <div className="flex-1 px-4 py-6 sm:px-6 overflow-y-auto">
+          
+          <PuzzleBoard
             puzzle={puzzle}
-            selectedNumber={selectedNumber}
-            incorrectCells={incorrectCells}
+            placed={placed}
+            selectedCellId={selectedCellId}
+            removingCellId={removingCellId}
+            isError={isError}
+            isSuccess={isSuccess}
             onCellClick={handleCellClick}
           />
 
-          <NumberBank
-            numbers={puzzle.numberBank}
-            selectedNumber={selectedNumber}
-            onSelect={setSelectedNumber}
+          <NumberTray
+            tiles={shuffledTiles}
+            usedTileIds={usedTileIds}
+            onNumberClick={handleTileClick}
           />
 
-          <div className="flex justify-center mt-7">
-            <HintButton disabled={hints >= 3} onClick={handleHint} />
-          </div>
+          <p className="mt-8 text-center text-[13px] font-bold tracking-wide text-slate-400 h-6 transition-all">
+            {!selectedCellId 
+              ? "TAP AN EMPTY BOX"
+              : "CHOOSE A NUMBER"}
+          </p>
         </div>
       </div>
     </main>
