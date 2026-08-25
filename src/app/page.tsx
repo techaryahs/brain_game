@@ -12,7 +12,7 @@ const games = [
     name: "X & O",
     icon: "❌",
     description: "Challenge your strategy with the classic game.",
-    href: "/games/xo",
+    href: "/games/tic-tac-toe",
   },
   {
     name: "Calculation",
