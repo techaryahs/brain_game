@@ -14,10 +14,7 @@ export default function NumberTray({
   onNumberClick,
 }: NumberTrayProps) {
   return (
-    <div className="mx-auto mt-6 max-w-[440px]">
-      <p className="mb-3 text-center text-xs font-bold tracking-[0.2em] text-slate-400">
-        NUMBER TILES
-      </p>
+    <div className="mx-auto w-full max-w-[440px]">
 
       <div className="grid grid-cols-5 gap-2 sm:gap-3">
         {tiles.map((tile) => {

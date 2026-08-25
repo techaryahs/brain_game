@@ -25,8 +25,8 @@ const VOLUMES: Record<SoundName, number> = {
 
 class SoundManagerClass {
   private isMuted: boolean = false;
-  private audioPool: Map<SoundName, HTMLAudioElement[]> = new Map();
-  private maxPoolSize = 5; // Allow rapid consecutive sounds
+  private audioMap: Map<SoundName, HTMLAudioElement> = new Map();
+  private timerMap: Map<SoundName, ReturnType<typeof setTimeout>> = new Map();
 
   constructor() {
     if (typeof window !== "undefined") {
@@ -42,6 +42,9 @@ class SoundManagerClass {
     if (typeof window !== "undefined") {
       localStorage.setItem("calculationSoundMuted", String(muted));
     }
+    if (muted) {
+      this.stopAll();
+    }
   }
 
   public getMuted() {
@@ -53,23 +56,24 @@ class SoundManagerClass {
     return this.isMuted;
   }
 
+  public stopAll() {
+    this.audioMap.forEach((audio) => {
+      audio.pause();
+      audio.currentTime = 0;
+    });
+    this.timerMap.forEach((timerId) => {
+      clearTimeout(timerId);
+    });
+    this.timerMap.clear();
+  }
+
   private getAudioElement(name: SoundName): HTMLAudioElement | null {
     if (typeof window === "undefined") return null;
 
-    if (!this.audioPool.has(name)) {
-      this.audioPool.set(name, []);
-    }
-
-    const pool = this.audioPool.get(name)!;
-    
-    // Find an available (ended or untouched) audio element
-    let audio = pool.find((a) => a.ended || a.currentTime === 0);
-
-    // If none available and we haven't reached max pool size, create one
-    if (!audio && pool.length < this.maxPoolSize) {
+    if (!this.audioMap.has(name)) {
       const extension = name === "puzzle-complete" ? "mp3" : "wav";
       const src = `/audio/calculation/${name}.${extension}`;
-      audio = new Audio(src);
+      const audio = new Audio(src);
       audio.volume = VOLUMES[name];
       
       // Handle missing files gracefully
@@ -77,15 +81,10 @@ class SoundManagerClass {
         console.warn(`Sound unavailable: ${src}`);
       };
 
-      pool.push(audio);
-    } 
-    // If pool is full, reuse the oldest playing element
-    else if (!audio) {
-      audio = pool[0]; // simplistic rotation
-      audio.currentTime = 0;
+      this.audioMap.set(name, audio);
     }
 
-    return audio;
+    return this.audioMap.get(name)!;
   }
 
   public play(name: SoundName) {
@@ -94,7 +93,14 @@ class SoundManagerClass {
     try {
       const audio = this.getAudioElement(name);
       if (audio) {
-        // Reset playback position if it's being reused
+        // Clear any existing timer for this specific sound to avoid premature stopping
+        if (this.timerMap.has(name)) {
+          clearTimeout(this.timerMap.get(name));
+          this.timerMap.delete(name);
+        }
+
+        // Reset playback position
+        audio.pause();
         audio.currentTime = 0;
         audio.volume = VOLUMES[name];
         
@@ -107,6 +113,15 @@ class SoundManagerClass {
             }
           });
         }
+
+        // Stop the audio after exactly 1 second (1000ms)
+        const timerId = setTimeout(() => {
+          audio.pause();
+          audio.currentTime = 0;
+          this.timerMap.delete(name);
+        }, 1000);
+
+        this.timerMap.set(name, timerId);
       }
     } catch (e) {
       console.warn(`Unexpected error playing sound ${name}:`, e);
