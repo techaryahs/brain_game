@@ -2,61 +2,177 @@
 
 import { useState } from "react";
 
-type Difficulty = "basic" | "intermediate" | "hard";
+type Tier = "basic" | "intermediate" | "hard";
 
-type DifficultyConfig = {
-  label: string;
+type LevelConfig = {
   size: number;
   words: string[];
   directions: [number, number][]; // [rowStep, colStep]
 };
 
-// Basic: sirf left-to-right (horizontal), no reverse, chota grid
-// Intermediate: horizontal + vertical (top-to-bottom), medium grid
-// Hard: horizontal, vertical, diagonal + reverse words, bada grid
-const DIFFICULTY_CONFIG: Record<Difficulty, DifficultyConfig> = {
-  basic: {
-    label: "Basic",
-    size: 8,
-    words: ["BRAIN", "FOCUS", "LEARN", "PLAY"],
-    directions: [[0, 1]], // left -> right only
-  },
-  intermediate: {
-    label: "Intermediate",
-    size: 10,
-    words: ["BRAIN", "PUZZLE", "FOCUS", "LEARN", "THINK", "PLAY"],
-    directions: [
-      [0, 1], // left -> right
-      [1, 0], // top -> bottom
-    ],
-  },
-  hard: {
-    label: "Hard",
-    size: 12,
-    words: [
-      "BRAIN",
-      "PUZZLE",
-      "FOCUS",
-      "LEARN",
-      "THINK",
-      "LOGIC",
-      "SMART",
-      "PLAY",
-    ],
-    directions: [
-      [0, 1], // left -> right
-      [0, -1], // right -> left (reverse)
-      [1, 0], // top -> bottom
-      [1, 1], // diagonal down-right
-      [1, -1], // diagonal down-left
-    ],
-  },
+const TIER_LABELS: Record<Tier, string> = {
+  basic: "Basic",
+  intermediate: "Intermediate",
+  hard: "Hard",
 };
+
+const LEVELS_PER_TIER = 10;
+
+// Tiers overlap on purpose:
+// Basic level 10  === Intermediate level 1  (same global index)
+// Intermediate level 10 === Hard level 1    (same global index)
+const TIER_START_INDEX: Record<Tier, number> = {
+  basic: 0,
+  intermediate: LEVELS_PER_TIER - 1, // 9
+  hard: (LEVELS_PER_TIER - 1) * 2, // 18
+};
+const TOTAL_LEVELS = TIER_START_INDEX.hard + LEVELS_PER_TIER; // 28 unique global levels
+
+// A bigger pool than any single puzzle needs, so New Game can pick a fresh
+// random set of words each time (not just re-shuffle the same set).
+const WORD_POOL = [
+  "PLAY",
+  "BRAIN",
+  "FOCUS",
+  "LEARN",
+  "THINK",
+  "LOGIC",
+  "SMART",
+  "PUZZLE",
+  "QUIZ",
+  "MEMORY",
+  "SOLVE",
+  "WORD",
+  "GAME",
+  "MIND",
+  "SHARP",
+  "RIDDLE",
+  "CLEVER",
+  "TRIVIA",
+  "SEARCH",
+  "MATCH",
+];
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+// All 8 directions, always available at every level: left-to-right,
+// right-to-left, top-to-bottom, bottom-to-top, and both diagonals.
+const ALL_DIRECTIONS: [number, number][] = [
+  [0, 1], // left -> right
+  [0, -1], // right -> left
+  [1, 0], // top -> bottom
+  [-1, 0], // bottom -> top
+  [1, 1], // diagonal down-right
+  [1, -1], // diagonal down-left
+  [-1, 1], // diagonal up-right
+  [-1, -1], // diagonal up-left
+];
+
+// Global difficulty ramps smoothly across all 28 levels: grid grows,
+// word count grows. Direction is the same full set at every level so
+// words can cross in any way (horizontal, vertical, diagonal, reversed).
+// Word list itself is picked separately (see pickWords) so it can be
+// randomized fresh on every New Game click.
+function getLevelShape(globalIndex: number) {
+  const progress = globalIndex / (TOTAL_LEVELS - 1); // 0..1
+  const size = clamp(Math.round(6 + progress * 9), 6, 15); // 6 -> 15
+  const wordCount = clamp(Math.round(3 + progress * 5), 3, 8); // 3 -> 8
+  return { size, wordCount, directions: ALL_DIRECTIONS };
+}
+
+// Randomly picks `wordCount` words from the pool that fit inside `size`,
+// using the same seeded random used for board placement so results are
+// reproducible per seed but different on every New Game click.
+function pickWords(
+  wordCount: number,
+  size: number,
+  random: () => number,
+): string[] {
+  const candidates = WORD_POOL.filter((word) => word.length <= size);
+  const pool = candidates.length >= wordCount ? candidates : WORD_POOL;
+  const shuffled = shuffle(pool, random);
+  return shuffled.slice(0, Math.min(wordCount, shuffled.length));
+}
+
+// Builds a full LevelConfig (size, a freshly randomized word list, and
+// directions) for a given global level index + seed. Called with a new
+// seed (Date.now()) on every New Game click so the word list changes too,
+// not just the letter grid.
+function buildLevel(globalIndex: number, seed: number): LevelConfig {
+  const shape = getLevelShape(globalIndex);
+  let randomSeed = seed;
+  const random = () => {
+    randomSeed = (randomSeed * 9301 + 49297) % 233280;
+    return randomSeed / 233280;
+  };
+  const words = pickWords(shape.wordCount, shape.size, random);
+  return { size: shape.size, words, directions: shape.directions };
+}
+
+function describeDirections(directions: [number, number][]) {
+  const has = (r: number, c: number) =>
+    directions.some(([dr, dc]) => dr === r && dc === c);
+  const parts: string[] = [];
+  if (has(0, 1) && has(0, -1)) parts.push("left-right & right-left");
+  else if (has(0, 1)) parts.push("left-to-right");
+  else if (has(0, -1)) parts.push("right-to-left");
+  if (has(1, 0) && has(-1, 0)) parts.push("up-down & down-up");
+  else if (has(1, 0)) parts.push("top-to-bottom");
+  else if (has(-1, 0)) parts.push("bottom-to-top");
+  if (has(1, 1) || has(1, -1) || has(-1, 1) || has(-1, -1))
+    parts.push("diagonal (both ways)");
+  return parts.join(", ");
+}
 
 type Cell = { row: number; col: number };
 type Game = { board: string[][]; words: { word: string; cells: Cell[] }[] };
 
-function createGame(config: DifficultyConfig, seed = 1): Game {
+function shuffle<T>(items: T[], random: () => number): T[] {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function tryPlace(
+  word: string,
+  row: number,
+  col: number,
+  rowStep: number,
+  colStep: number,
+  size: number,
+  board: string[][],
+) {
+  const endRow = row + rowStep * (word.length - 1);
+  const endCol = col + colStep * (word.length - 1);
+  if (
+    row < 0 ||
+    row >= size ||
+    col < 0 ||
+    col >= size ||
+    endRow < 0 ||
+    endRow >= size ||
+    endCol < 0 ||
+    endCol >= size
+  )
+    return null;
+  const cells = word.split("").map((letter, index) => ({
+    row: row + rowStep * index,
+    col: col + colStep * index,
+    letter,
+  }));
+  const valid = cells.every(
+    ({ row: cellRow, col: cellCol, letter }) =>
+      !board[cellRow][cellCol] || board[cellRow][cellCol] === letter,
+  );
+  return valid ? cells : null;
+}
+
+function createGame(config: LevelConfig, seed = 1): Game {
   let randomSeed = seed;
   const random = () => {
     randomSeed = (randomSeed * 9301 + 49297) % 233280;
@@ -65,42 +181,97 @@ function createGame(config: DifficultyConfig, seed = 1): Game {
   const size = config.size;
   const board = Array.from({ length: size }, () => Array(size).fill(""));
   const words: Game["words"] = [];
-  config.words.forEach((word) => {
-    for (let attempt = 0; attempt < 300; attempt += 1) {
-      const [rowStep, colStep] =
-        config.directions[Math.floor(random() * config.directions.length)];
-      const row = Math.floor(random() * size);
-      const col = Math.floor(random() * size);
-      const endRow = row + rowStep * (word.length - 1);
-      const endCol = col + colStep * (word.length - 1);
-      if (endRow < 0 || endRow >= size || endCol < 0 || endCol >= size)
-        continue;
-      const cells = word
-        .split("")
-        .map((letter, index) => ({
-          row: row + rowStep * index,
-          col: col + colStep * index,
-          letter,
-        }));
-      if (
-        !cells.every(
-          ({ row: cellRow, col: cellCol, letter }) =>
-            !board[cellRow][cellCol] || board[cellRow][cellCol] === letter,
-        )
-      )
-        continue;
-      cells.forEach(({ row: cellRow, col: cellCol, letter }) => {
-        board[cellRow][cellCol] = letter;
-      });
-      words.push({
-        word,
-        cells: cells.map(({ row: cellRow, col: cellCol }) => ({
-          row: cellRow,
-          col: cellCol,
-        })),
-      });
-      break;
+
+  // Words are sorted longest-first so the first (longest) word lays a solid
+  // spine, and every later word is actively steered to intersect a letter
+  // that is already on the board — this is what makes words genuinely
+  // cross each other instead of just sitting next to one another.
+  const orderedWords = [...config.words].sort((a, b) => b.length - a.length);
+
+  orderedWords.forEach((word, wordIndex) => {
+    let placedCells: { row: number; col: number; letter: string }[] | null =
+      null;
+
+    if (wordIndex > 0) {
+      // Gather every letter already on the board that also appears in this
+      // word — each one is a potential crossing point.
+      const anchors: { row: number; col: number; letter: string }[] = [];
+      for (let r = 0; r < size; r += 1) {
+        for (let c = 0; c < size; c += 1) {
+          if (board[r][c] && word.includes(board[r][c])) {
+            anchors.push({ row: r, col: c, letter: board[r][c] });
+          }
+        }
+      }
+
+      const shuffledAnchors = shuffle(anchors, random);
+      for (const anchor of shuffledAnchors) {
+        if (placedCells) break;
+        const letterIndices: number[] = [];
+        word.split("").forEach((letter, index) => {
+          if (letter === anchor.letter) letterIndices.push(index);
+        });
+        const shuffledIndices = shuffle(letterIndices, random);
+        const shuffledDirections = shuffle(config.directions, random);
+        for (const letterIndex of shuffledIndices) {
+          if (placedCells) break;
+          for (const [rowStep, colStep] of shuffledDirections) {
+            const row = anchor.row - rowStep * letterIndex;
+            const col = anchor.col - colStep * letterIndex;
+            const cells = tryPlace(word, row, col, rowStep, colStep, size, board);
+            if (cells) {
+              placedCells = cells;
+              break;
+            }
+          }
+        }
+      }
     }
+
+    // Fall back to plain random placement first (fast path).
+    if (!placedCells) {
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        const [rowStep, colStep] =
+          config.directions[Math.floor(random() * config.directions.length)];
+        const row = Math.floor(random() * size);
+        const col = Math.floor(random() * size);
+        const cells = tryPlace(word, row, col, rowStep, colStep, size, board);
+        if (cells) {
+          placedCells = cells;
+          break;
+        }
+      }
+    }
+
+    // Last resort: exhaustively scan every cell + direction. This guarantees
+    // a word is only ever left unplaced if it truly cannot fit anywhere —
+    // which stops short words like PLAY from silently vanishing.
+    if (!placedCells) {
+      outer: for (let r = 0; r < size; r += 1) {
+        for (let c = 0; c < size; c += 1) {
+          for (const [rowStep, colStep] of config.directions) {
+            const cells = tryPlace(word, r, c, rowStep, colStep, size, board);
+            if (cells) {
+              placedCells = cells;
+              break outer;
+            }
+          }
+        }
+      }
+    }
+
+    if (!placedCells) return;
+
+    placedCells.forEach(({ row: cellRow, col: cellCol, letter }) => {
+      board[cellRow][cellCol] = letter;
+    });
+    words.push({
+      word,
+      cells: placedCells.map(({ row: cellRow, col: cellCol }) => ({
+        row: cellRow,
+        col: cellCol,
+      })),
+    });
   });
   return {
     board: board.map((row) =>
@@ -133,19 +304,101 @@ function between(start: Cell, end: Cell) {
   }));
 }
 
+// A single shared AudioContext, created lazily on first use and reused for
+// every sound. Creating a brand-new context per sound is what was causing
+// the very first "found" sound to sometimes get silently dropped (some
+// browsers start a freshly-created context in a "suspended" state).
+let sharedAudioContext: AudioContext | null = null;
+function getAudioContext(): AudioContext | null {
+  if (typeof window === "undefined") return null;
+  const AudioContextClass =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext?: typeof AudioContext })
+      .webkitAudioContext;
+  if (!AudioContextClass) return null;
+  if (!sharedAudioContext) {
+    sharedAudioContext = new AudioContextClass();
+  }
+  if (sharedAudioContext.state === "suspended") {
+    // Must be called from inside a user-gesture handler (a click), which
+    // is exactly where playFoundSound/playCompleteSound are invoked from.
+    sharedAudioContext.resume();
+  }
+  return sharedAudioContext;
+}
+
+// Plays a short pleasant "found it" chime using the Web Audio API —
+// no audio file needed, works offline, and needs no extra assets.
+function playFoundSound() {
+  const ctx = getAudioContext();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  // A quick two-note upward chime (like a soft "ding-ding!").
+  const notes = [
+    { freq: 880, start: 0, duration: 0.12 },
+    { freq: 1318.5, start: 0.1, duration: 0.18 },
+  ];
+  notes.forEach(({ freq, start, duration }) => {
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.value = freq;
+    gain.gain.setValueAtTime(0, now + start);
+    gain.gain.linearRampToValueAtTime(0.25, now + start + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + start + duration);
+    oscillator.connect(gain);
+    gain.connect(ctx.destination);
+    oscillator.start(now + start);
+    oscillator.stop(now + start + duration + 0.02);
+  });
+}
+
+function playCompleteSound() {
+  const ctx = getAudioContext();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  // A short celebratory ascending run for finishing the whole puzzle.
+  const notes = [523.25, 659.25, 783.99, 1046.5];
+  notes.forEach((freq, index) => {
+    const start = index * 0.1;
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    oscillator.type = "triangle";
+    oscillator.frequency.value = freq;
+    gain.gain.setValueAtTime(0, now + start);
+    gain.gain.linearRampToValueAtTime(0.25, now + start + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + start + 0.25);
+    oscillator.connect(gain);
+    gain.connect(ctx.destination);
+    oscillator.start(now + start);
+    oscillator.stop(now + start + 0.27);
+  });
+}
+
+function ordinal(n: number): string {
+  const suffixes = ["th", "st", "nd", "rd"];
+  const remainder = n % 100;
+  const suffix =
+    suffixes[(remainder - 20) % 10] || suffixes[remainder] || suffixes[0];
+  return `${n}${suffix}`;
+}
+
 export default function WordSearchPage() {
-  const [difficulty, setDifficulty] = useState<Difficulty>("basic");
-  const [game, setGame] = useState(() =>
-    createGame(DIFFICULTY_CONFIG.basic),
-  );
+  const [tier, setTier] = useState<Tier>("basic");
+  const [subLevel, setSubLevel] = useState(1); // 1..10 within the tier
+  const globalIndex = TIER_START_INDEX[tier] + (subLevel - 1);
+  const shape = getLevelShape(globalIndex);
+
+  const [game, setGame] = useState(() => createGame(buildLevel(0, 1), 1));
+  // Source of truth for the sidebar/win-check: only words that actually
+  // made it onto the board (never a word that silently failed to place).
+  const placedWords = game.words.map(({ word }) => word);
   const [start, setStart] = useState<Cell | null>(null);
   const [selected, setSelected] = useState<Cell[]>([]);
   const [found, setFound] = useState<string[]>([]);
   const [message, setMessage] = useState(
     "Click one letter, then click the last letter of the word.",
   );
-
-  const config = DIFFICULTY_CONFIG[difficulty];
 
   function choose(cell: Cell) {
     if (!start) {
@@ -166,8 +419,14 @@ export default function WordSearchPage() {
     setStart(null);
     setSelected([]);
     if (match && !found.includes(match.word)) {
-      setFound((current) => [...current, match.word]);
+      const nextFound = [...found, match.word];
+      setFound(nextFound);
       setMessage(`Great! You found ${match.word}.`);
+      if (nextFound.length === placedWords.length) {
+        playCompleteSound();
+      } else {
+        playFoundSound();
+      }
     } else
       setMessage(
         match
@@ -176,63 +435,94 @@ export default function WordSearchPage() {
       );
   }
 
-  function newGame(nextDifficulty: Difficulty = difficulty) {
-    const nextConfig = DIFFICULTY_CONFIG[nextDifficulty];
-    setDifficulty(nextDifficulty);
-    setGame(createGame(nextConfig, Date.now()));
+  function loadLevel(nextTier: Tier, nextSubLevel: number) {
+    const nextIndex = TIER_START_INDEX[nextTier] + (nextSubLevel - 1);
+    const seed = Date.now();
+    const nextConfig = buildLevel(nextIndex, seed);
+    setTier(nextTier);
+    setSubLevel(nextSubLevel);
+    setGame(createGame(nextConfig, seed));
     setStart(null);
     setSelected([]);
     setFound([]);
     setMessage("A new board is ready!");
   }
 
-  const complete = found.length === config.words.length;
+  function newGame() {
+    loadLevel(tier, subLevel);
+  }
+
+  const complete = found.length === placedWords.length;
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 px-4 py-10 text-white">
+    <main className="min-h-screen bg-slate-50 px-4 py-10 text-slate-900">
       <section className="mx-auto max-w-5xl">
         <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
           <div>
-            <p className="mb-2 text-sm font-semibold tracking-[0.25em] text-cyan-300">
+            <p className="mb-2 text-sm font-semibold tracking-[0.25em] text-indigo-600">
               BRAIN GAMES
             </p>
             <h1 className="text-4xl font-black sm:text-5xl">Word Search</h1>
-            <p className="mt-2 text-slate-300">
+            <p className="mt-2 text-slate-500">
               Find the hidden words in the grid.
             </p>
           </div>
           <button
             type="button"
-            onClick={() => newGame()}
-            className="rounded-xl bg-cyan-400 px-5 py-3 font-bold text-slate-950 transition hover:bg-cyan-300"
+            onClick={newGame}
+            className="rounded-xl bg-indigo-600 px-5 py-3 font-bold text-white transition hover:bg-indigo-500"
           >
             New Game
           </button>
         </div>
 
-        <div className="mb-6 flex flex-wrap gap-3">
-          {(Object.keys(DIFFICULTY_CONFIG) as Difficulty[]).map((level) => (
+        <div className="mb-4 flex flex-wrap gap-3">
+          {(Object.keys(TIER_LABELS) as Tier[]).map((level) => (
             <button
               key={level}
               type="button"
-              onClick={() => newGame(level)}
+              onClick={() => loadLevel(level, 1)}
               className={`rounded-xl border px-5 py-2 font-bold transition ${
-                difficulty === level
-                  ? "border-cyan-300 bg-cyan-400 text-slate-950"
-                  : "border-white/15 bg-white/5 text-slate-200 hover:bg-white/10"
+                tier === level
+                  ? "border-indigo-600 bg-indigo-600 text-white"
+                  : "border-slate-200 bg-white text-slate-600 hover:bg-slate-100"
               }`}
             >
-              {DIFFICULTY_CONFIG[level].label}
+              {TIER_LABELS[level]}
             </button>
           ))}
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_260px]">
-          <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-3 shadow-2xl sm:p-6">
+        <div className="grid gap-6 lg:grid-cols-[160px_minmax(0,1fr)_260px]">
+          <aside className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+            <p className="mb-3 text-sm font-semibold uppercase tracking-widest text-indigo-600">
+              Levels
+            </p>
+            <div className="flex flex-col gap-2">
+              {Array.from({ length: LEVELS_PER_TIER }, (_, i) => i + 1).map(
+                (levelNumber) => (
+                  <button
+                    key={levelNumber}
+                    type="button"
+                    onClick={() => loadLevel(tier, levelNumber)}
+                    className={`w-full rounded-lg px-3 py-2 text-left text-sm font-bold transition ${
+                      subLevel === levelNumber
+                        ? "bg-amber-400 text-amber-950"
+                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    }`}
+                  >
+                    Level {levelNumber}
+                  </button>
+                ),
+              )}
+            </div>
+          </aside>
+
+          <div className="rounded-3xl border border-slate-200 bg-white p-3 shadow-sm sm:p-6">
             <div
-              className="grid gap-1 rounded-2xl bg-slate-950 p-2 sm:gap-2 sm:p-3"
+              className="grid gap-1 rounded-2xl bg-slate-100 p-2 sm:gap-2 sm:p-3"
               style={{
-                gridTemplateColumns: `repeat(${config.size}, minmax(0, 1fr))`,
+                gridTemplateColumns: `repeat(${shape.size}, minmax(0, 1fr))`,
                 aspectRatio: "1 / 1",
               }}
             >
@@ -250,7 +540,7 @@ export default function WordSearchPage() {
                       type="button"
                       key={`${rowIndex}-${colIndex}`}
                       onClick={() => choose(cell)}
-                      className={`aspect-square rounded-md text-sm font-black sm:text-xl ${isFound ? "bg-emerald-400 text-emerald-950" : isSelected ? "bg-amber-300 text-amber-950" : "bg-slate-800 text-white hover:bg-indigo-600"}`}
+                      className={`aspect-square rounded-md text-sm font-black sm:text-xl ${isFound ? "bg-emerald-400 text-emerald-950" : isSelected ? "bg-amber-300 text-amber-950" : "bg-white text-slate-800 border border-slate-200 hover:bg-indigo-100"}`}
                       aria-label={`Letter ${letter}`}
                     >
                       {letter}
@@ -259,34 +549,39 @@ export default function WordSearchPage() {
                 }),
               )}
             </div>
-            <p className="mt-5 rounded-xl bg-indigo-500/15 px-4 py-3 text-sm text-indigo-100">
-              {complete ? "All words found! Congratulations!" : message}
+            <p className="mt-5 rounded-xl bg-indigo-50 px-4 py-3 text-sm text-indigo-700">
+              {complete
+                ? subLevel === LEVELS_PER_TIER && tier === "basic"
+                  ? "Congratulations! You are eligible for Intermediate level!"
+                  : subLevel === LEVELS_PER_TIER && tier === "intermediate"
+                    ? "Congratulations! You are eligible for Hard level!"
+                    : subLevel === LEVELS_PER_TIER && tier === "hard"
+                      ? "Congratulations! You are a Word Search Master!"
+                      : `Congratulations! Your ${ordinal(subLevel)} level complete!`
+                : message}
             </p>
           </div>
-          <aside className="rounded-3xl border border-white/10 bg-white/5 p-6">
-            <p className="text-sm font-semibold uppercase tracking-widest text-cyan-300">
-              Words to find
+          <aside className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <p className="text-sm font-semibold uppercase tracking-widest text-indigo-600">
+              {TIER_LABELS[tier]} • Level {subLevel}/{LEVELS_PER_TIER}
             </p>
             <p className="mt-2 text-3xl font-black">
-              {found.length}/{config.words.length}
+              {found.length}/{placedWords.length}
             </p>
             <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-1">
-              {config.words.map((word) => (
+              {placedWords.map((word) => (
                 <div
                   key={word}
-                  className={`rounded-xl border px-4 py-3 font-bold tracking-wider ${found.includes(word) ? "border-emerald-400/30 bg-emerald-400/15 text-emerald-300 line-through" : "border-white/10 bg-slate-900/60 text-slate-100"}`}
+                  className={`rounded-xl border px-4 py-3 font-bold tracking-wider ${found.includes(word) ? "border-emerald-300 bg-emerald-50 text-emerald-600 line-through" : "border-slate-200 bg-slate-50 text-slate-700"}`}
                 >
                   {word}
                 </div>
               ))}
             </div>
-            <p className="mt-6 border-t border-white/10 pt-5 text-sm leading-6 text-slate-400">
-              {difficulty === "basic" &&
-                "Basic: words only go left to right."}
-              {difficulty === "intermediate" &&
-                "Intermediate: words go left-to-right or top-to-bottom."}
-              {difficulty === "hard" &&
-                "Hard: words can go in any direction, including diagonals and reverse."}
+            <p className="mt-6 border-t border-slate-200 pt-5 text-sm leading-6 text-slate-500">
+              {shape.size}x{shape.size} grid • words go{" "}
+              {describeDirections(shape.directions)} • some words cross
+              each other.
             </p>
           </aside>
         </div>
