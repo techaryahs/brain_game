@@ -6,6 +6,7 @@ import NumberPad from "@/games/sudoku/components/NumberPad";
 import SudokuGridBoard from "@/games/sudoku/components/SudokuBoard";
 import { generateSudokuPuzzle } from "@/games/sudoku/logic/sudokuGenerator";
 import { isBoardSolved, isMoveAllowed } from "@/games/sudoku/logic/sudokuLogic";
+import { DIGITS, getCandidates } from "@/games/sudoku/logic/sudokuSolver";
 import type {
   CellPosition,
   SudokuBoard as SudokuGrid,
@@ -31,6 +32,102 @@ const formatTime = (seconds: number): string => {
   return `${mins}:${secs}`;
 };
 
+type HintResult = {
+  targetCell: CellPosition;
+  message: string;
+};
+
+const getEditableCells = (puzzle: SudokuPuzzle): CellPosition[] =>
+  puzzle.currentBoard.flatMap((row, rowIndex) =>
+    row.flatMap((value, colIndex) =>
+      value === 0 && puzzle.initialBoard[rowIndex][colIndex] === 0
+        ? [{ row: rowIndex, col: colIndex }]
+        : [],
+    ),
+  );
+
+const findLogicalHint = (puzzle: SudokuPuzzle): HintResult | null => {
+  const { currentBoard: board } = puzzle;
+  const editableCells = getEditableCells(puzzle);
+  const candidatesByCell = new Map(
+    editableCells.map((cell) => [
+      `${cell.row}:${cell.col}`,
+      getCandidates(board, cell.row, cell.col),
+    ]),
+  );
+
+  const nakedSingle = editableCells.find(
+    (cell) => candidatesByCell.get(`${cell.row}:${cell.col}`)?.length === 1,
+  );
+  if (nakedSingle) {
+    return {
+      targetCell: nakedSingle,
+      message: "This cell has only one valid candidate. Check the highlighted row, column, and block.",
+    };
+  }
+
+  const findHiddenSingle = (
+    unitCells: CellPosition[],
+    message: string,
+  ): HintResult | null => {
+    const missingValues = DIGITS.filter(
+      (value) => !unitCells.some((cell) => board[cell.row][cell.col] === value),
+    );
+
+    for (const value of missingValues) {
+      const positions = unitCells.filter((cell) =>
+        candidatesByCell.get(`${cell.row}:${cell.col}`)?.includes(value),
+      );
+      if (positions.length === 1) {
+        return { targetCell: positions[0], message };
+      }
+    }
+    return null;
+  };
+
+  for (let row = 0; row < 9; row += 1) {
+    const result = findHiddenSingle(
+      editableCells.filter((cell) => cell.row === row),
+      "Only one number is missing from this row. Look at the highlighted row and block.",
+    );
+    if (result) return result;
+  }
+
+  for (let col = 0; col < 9; col += 1) {
+    const result = findHiddenSingle(
+      editableCells.filter((cell) => cell.col === col),
+      "The highlighted column can only place one number in this position. Compare its row and block.",
+    );
+    if (result) return result;
+  }
+
+  for (let boxRow = 0; boxRow < 3; boxRow += 1) {
+    for (let boxCol = 0; boxCol < 3; boxCol += 1) {
+      const result = findHiddenSingle(
+        editableCells.filter(
+          (cell) =>
+            Math.floor(cell.row / 3) === boxRow && Math.floor(cell.col / 3) === boxCol,
+        ),
+        "The highlighted block can place a missing number in only one position. Check the crossing row and column.",
+      );
+      if (result) return result;
+    }
+  }
+
+  const mostConstrained = [...editableCells].sort(
+    (first, second) =>
+      (candidatesByCell.get(`${first.row}:${first.col}`)?.length ?? 9) -
+      (candidatesByCell.get(`${second.row}:${second.col}`)?.length ?? 9),
+  )[0];
+
+  return mostConstrained
+    ? {
+        targetCell: mostConstrained,
+        message: "This cell has the fewest options. Compare the highlighted row, column, and block.",
+      }
+    : null;
+};
+
 export default function SudokuPage() {
   const [difficulty, setDifficulty] = useState<SudokuDifficulty>("easy");
   const [puzzle, setPuzzle] = useState<SudokuPuzzle | null>(null);
@@ -41,6 +138,7 @@ export default function SudokuPage() {
   const [isStarted, setIsStarted] = useState(false);
   const [isComplete, setIsComplete] = useState(false);
   const [invalidCells, setInvalidCells] = useState<CellPosition[]>([]);
+  const [hintTargetCell, setHintTargetCell] = useState<CellPosition | null>(null);
   const [feedback, setFeedback] = useState<string>("Select a square to begin.");
 
   const startGame = useCallback(
@@ -55,6 +153,7 @@ export default function SudokuPage() {
       setTimeElapsed(0);
       setIsComplete(false);
       setInvalidCells([]);
+      setHintTargetCell(null);
       setFeedback(`New ${difficultyLabels[nextDifficulty].toLowerCase()} puzzle ready.`);
       setIsStarted(true);
     },
@@ -71,6 +170,12 @@ export default function SudokuPage() {
     },
     [isStarted, startGame],
   );
+
+  const handleSelectCell = useCallback((row: number, col: number) => {
+    setSelectedCell({ row, col });
+    setHintTargetCell(null);
+    setFeedback(`Selected row ${row + 1}, column ${col + 1}.`);
+  }, []);
 
   useEffect(() => {
     if (!isStarted || !puzzle || isComplete) {
@@ -187,41 +292,17 @@ export default function SudokuPage() {
       return;
     }
 
-    const targetCell =
-      selectedCell ??
-      (() => {
-        for (let row = 0; row < 9; row += 1) {
-          for (let col = 0; col < 9; col += 1) {
-            if (puzzle.currentBoard[row][col] === 0) {
-              return { row, col };
-            }
-          }
-        }
-
-        return null;
-      })();
-
-    if (!targetCell || puzzle.initialBoard[targetCell.row][targetCell.col] !== 0) {
+    const hint = findLogicalHint(puzzle);
+    if (!hint) {
       setFeedback("No editable cell is available for a hint.");
       return;
     }
 
-    const nextBoard = cloneBoard(puzzle.currentBoard);
-    nextBoard[targetCell.row][targetCell.col] = puzzle.solution[targetCell.row][targetCell.col];
-
-    setPuzzle({
-      ...puzzle,
-      currentBoard: nextBoard,
-    });
-    setSelectedCell(targetCell);
+    setSelectedCell(hint.targetCell);
+    setHintTargetCell(hint.targetCell);
     setHintsUsed((previous) => previous + 1);
-    setFeedback(`Hint used: row ${targetCell.row + 1}, column ${targetCell.col + 1}.`);
-
-    if (isBoardSolved(nextBoard, puzzle.solution)) {
-      setIsComplete(true);
-      setFeedback("Puzzle solved!");
-    }
-  }, [isComplete, puzzle, selectedCell]);
+    setFeedback(hint.message);
+  }, [isComplete, puzzle]);
 
   const statusText = useMemo(() => {
     if (!puzzle) {
@@ -241,15 +322,15 @@ export default function SudokuPage() {
 
   if (!isStarted || !puzzle) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-slate-950 p-6 text-white">
-        <div className="w-full max-w-2xl rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl shadow-slate-950/40 md:p-8">
-          <div className="mb-8 text-center">
-            <div className="mb-4 text-6xl">🧩</div>
-            <h1 className="text-4xl font-black tracking-tight md:text-5xl">Sudoku</h1>
-            <p className="mt-3 text-slate-400">Logic, focus, and a sharp eye for patterns.</p>
+      <main className="flex min-h-screen items-center justify-center bg-slate-100 p-6 text-slate-900">
+        <div className="w-full max-w-md border border-slate-300 bg-white p-6 shadow-sm md:p-8">
+          <div className="mb-8">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-sky-700">Brain Game</p>
+            <h1 className="mt-2 text-4xl font-black tracking-tight">Sudoku</h1>
+            <p className="mt-2 text-slate-500">Choose a difficulty to begin.</p>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-2">
             {(Object.keys(difficultyLabels) as SudokuDifficulty[]).map((level) => (
               <button
                 key={level}
@@ -257,8 +338,8 @@ export default function SudokuPage() {
                 onClick={() => handleDifficultyChange(level)}
                 className={`rounded-2xl border px-4 py-4 text-lg font-bold transition ${
                   difficulty === level
-                    ? "border-blue-500 bg-blue-600 text-white"
-                    : "border-slate-700 bg-slate-800 text-slate-200 hover:border-slate-500"
+                    ? "border-sky-600 bg-sky-600 text-white"
+                    : "border-slate-300 bg-white text-slate-700 hover:border-sky-500"
                 }`}
               >
                 {difficultyLabels[level]}
@@ -266,25 +347,10 @@ export default function SudokuPage() {
             ))}
           </div>
 
-          <div className="mt-8 grid gap-3 sm:grid-cols-3">
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 text-center">
-              <div className="text-2xl">🧠</div>
-              <div className="mt-2 text-sm text-slate-400">Logic</div>
-            </div>
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 text-center">
-              <div className="text-2xl">⏱️</div>
-              <div className="mt-2 text-sm text-slate-400">Timer</div>
-            </div>
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 text-center">
-              <div className="text-2xl">🎯</div>
-              <div className="mt-2 text-sm text-slate-400">Focus</div>
-            </div>
-          </div>
-
           <button
             type="button"
             onClick={() => startGame(difficulty)}
-            className="mt-8 w-full rounded-2xl bg-blue-600 px-5 py-4 text-lg font-bold text-white transition hover:bg-blue-500"
+            className="mt-6 w-full bg-sky-600 px-5 py-4 text-lg font-bold text-white transition hover:bg-sky-500"
           >
             Start Game
           </button>
@@ -294,44 +360,45 @@ export default function SudokuPage() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-950 px-4 py-8 text-white md:px-6">
-      <div className="mx-auto max-w-5xl">
-        <header className="mb-6 flex flex-col gap-4 rounded-3xl border border-slate-800 bg-slate-900/90 p-4 shadow-xl shadow-slate-950/30 md:flex-row md:items-center md:justify-between md:p-6">
+    <main className="min-h-screen bg-slate-100 px-4 py-6 text-slate-900 md:px-6">
+      <div className="mx-auto max-w-6xl">
+        <header className="mb-6 flex flex-col gap-4 border-b border-slate-300 pb-4 md:flex-row md:items-center md:justify-between">
           <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-blue-300">Sudoku</p>
+            <p className="text-xs uppercase tracking-[0.2em] text-sky-700">Sudoku</p>
             <h1 className="mt-2 text-2xl font-black md:text-3xl">{difficultyLabels[difficulty]}</h1>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <div className="rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-300">
-              Time: <span className="font-bold text-white">{formatTime(timeElapsed)}</span>
+            <div className="px-2 py-1 text-sm text-slate-500">
+              Time <span className="font-bold text-slate-900">{formatTime(timeElapsed)}</span>
             </div>
-            <div className="rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-300">
-              Mistakes: <span className="font-bold text-white">{mistakes}</span>
+            <div className="px-2 py-1 text-sm text-slate-500">
+              Mistakes <span className="font-bold text-slate-900">{mistakes}</span>
             </div>
-            <div className="rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-300">
-              Hints: <span className="font-bold text-white">{hintsUsed}</span>
+            <div className="px-2 py-1 text-sm text-slate-500">
+              Hints <span className="font-bold text-slate-900">{hintsUsed}</span>
             </div>
           </div>
         </header>
 
-        <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-          <section className="rounded-3xl border border-slate-800 bg-slate-900/90 p-3 md:p-5">
+        <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,540px)_280px] lg:justify-center">
+          <section>
             <SudokuGridBoard
               board={puzzle.currentBoard}
               initialBoard={puzzle.initialBoard}
               selectedCell={selectedCell}
+              hintTargetCell={hintTargetCell}
               invalidCells={invalidCells}
-              onSelectCell={(row, col) => setSelectedCell({ row, col })}
+              onSelectCell={handleSelectCell}
             />
           </section>
 
-          <aside className="space-y-4 rounded-3xl border border-slate-800 bg-slate-900/90 p-4 md:p-5">
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-              <p className="text-sm uppercase tracking-[0.2em] text-slate-400">Status</p>
+          <aside className="space-y-5">
+            <div className="border-b border-slate-300 pb-4">
+              <p className="text-sm uppercase tracking-[0.2em] text-slate-500">Status</p>
               <p
                 className={`mt-2 text-base font-medium ${
-                  feedback && !isComplete ? "text-amber-200" : "text-slate-100"
+                  feedback && !isComplete ? "text-sky-800" : "text-slate-700"
                 }`}
               >
                 {activeStatusText}
@@ -339,7 +406,7 @@ export default function SudokuPage() {
             </div>
 
             <div className="space-y-3">
-              <div className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">Difficulty</div>
+              <div className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">Difficulty</div>
               <div className="grid grid-cols-3 gap-2">
                 {(Object.keys(difficultyLabels) as SudokuDifficulty[]).map((level) => (
                   <button
@@ -348,8 +415,8 @@ export default function SudokuPage() {
                     onClick={() => handleDifficultyChange(level)}
                     className={`rounded-xl px-3 py-2 text-sm font-bold transition ${
                       difficulty === level
-                        ? "bg-blue-600 text-white"
-                        : "border border-slate-700 bg-slate-950 text-slate-200 hover:border-slate-500"
+                        ? "bg-sky-600 text-white"
+                        : "border border-slate-300 bg-white text-slate-700 hover:border-sky-500"
                     }`}
                   >
                     {difficultyLabels[level]}
@@ -364,14 +431,14 @@ export default function SudokuPage() {
               <button
                 type="button"
                 onClick={handleHint}
-                className="rounded-xl border border-blue-500 bg-blue-600/20 px-4 py-3 text-sm font-bold text-blue-100 transition hover:bg-blue-600/30"
+                className="border border-sky-600 bg-sky-50 px-4 py-3 text-sm font-bold text-sky-800 transition hover:bg-sky-100"
               >
                 Hint
               </button>
               <button
                 type="button"
                 onClick={() => startGame(difficulty)}
-                className="rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm font-bold text-slate-100 transition hover:border-slate-500"
+                className="border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-700 transition hover:border-slate-500"
               >
                 New Puzzle
               </button>
@@ -388,9 +455,10 @@ export default function SudokuPage() {
                     setHintsUsed(0);
                     setTimeElapsed(0);
                     setIsComplete(false);
+                    setHintTargetCell(null);
                   }
                 }}
-                className="rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm font-bold text-slate-100 transition hover:border-slate-500 sm:col-span-2"
+                className="border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-700 transition hover:border-slate-500 sm:col-span-2"
               >
                 Restart
               </button>
