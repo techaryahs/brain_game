@@ -26,6 +26,12 @@ const games = [
     description: "Find hidden words and improve your vocabulary.",
     href: "/games/word-search",
   },
+  {
+    name: "Tap to Clear",
+    icon: "➡️",
+    description: "Clear the paths by tapping the arrows in the right order.",
+    href: "/games/tap-to-clear",
+  },
 ];
 
 export default function HomePage() {
@@ -83,4 +89,3 @@ export default function HomePage() {
     </div>
   );
 }
-    
