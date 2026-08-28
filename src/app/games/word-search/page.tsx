@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type Tier = "basic" | "intermediate" | "hard";
 
@@ -375,6 +375,24 @@ function playCompleteSound() {
   });
 }
 
+// A "tick" click sound played on every letter tap, ~1 second long as
+// requested (a soft click that rings for about a second, like a clock tick).
+function playTickSound() {
+  const ctx = getAudioContext();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const oscillator = ctx.createOscillator();
+  const gain = ctx.createGain();
+  oscillator.type = "square";
+  oscillator.frequency.value = 1000;
+  gain.gain.setValueAtTime(0.18, now);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 1);
+  oscillator.connect(gain);
+  gain.connect(ctx.destination);
+  oscillator.start(now);
+  oscillator.stop(now + 1);
+}
+
 function ordinal(n: number): string {
   const suffixes = ["th", "st", "nd", "rd"];
   const remainder = n % 100;
@@ -399,8 +417,30 @@ export default function WordSearchPage() {
   const [message, setMessage] = useState(
     "Click one letter, then click the last letter of the word.",
   );
+  const [soundOn, setSoundOn] = useState(true);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [finalTime, setFinalTime] = useState<number | null>(null);
+
+  const complete = found.length === placedWords.length;
+
+  // Ticks the level timer every second while the puzzle is still in
+  // progress; stops (and freezes) once the level is completed.
+  useEffect(() => {
+    if (complete) return;
+    const interval = setInterval(() => {
+      setElapsedSeconds((seconds) => seconds + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [complete]);
+
+  function formatTime(totalSeconds: number) {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+  }
 
   function choose(cell: Cell) {
+    if (soundOn) playTickSound();
     if (!start) {
       setStart(cell);
       setSelected([cell]);
@@ -423,8 +463,9 @@ export default function WordSearchPage() {
       setFound(nextFound);
       setMessage(`Great! You found ${match.word}.`);
       if (nextFound.length === placedWords.length) {
-        playCompleteSound();
-      } else {
+        setFinalTime(elapsedSeconds);
+        if (soundOn) playCompleteSound();
+      } else if (soundOn) {
         playFoundSound();
       }
     } else
@@ -446,13 +487,13 @@ export default function WordSearchPage() {
     setSelected([]);
     setFound([]);
     setMessage("A new board is ready!");
+    setElapsedSeconds(0);
+    setFinalTime(null);
   }
 
   function newGame() {
     loadLevel(tier, subLevel);
   }
-
-  const complete = found.length === placedWords.length;
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-10 text-slate-900">
@@ -469,11 +510,31 @@ export default function WordSearchPage() {
           </div>
           <button
             type="button"
+            onClick={() => setSoundOn((current) => !current)}
+            className={`rounded-xl border px-5 py-3 font-bold transition ${
+              soundOn
+                ? "border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+                : "border-slate-200 bg-slate-100 text-slate-500 hover:bg-slate-200"
+            }`}
+          >
+            {soundOn ? "🔊 Sound On" : "🔇 Sound Off"}
+          </button>
+          <button
+            type="button"
             onClick={newGame}
             className="rounded-xl bg-indigo-600 px-5 py-3 font-bold text-white transition hover:bg-indigo-500"
           >
             New Game
           </button>
+        </div>
+
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          <p className="rounded-xl border border-slate-200 bg-white px-4 py-2 font-bold text-slate-700 shadow-sm">
+            ⏱️{" "}
+            {finalTime !== null
+              ? `Finished in ${formatTime(finalTime)}`
+              : formatTime(elapsedSeconds)}
+          </p>
         </div>
 
         <div className="mb-4 flex flex-wrap gap-3">
@@ -552,12 +613,12 @@ export default function WordSearchPage() {
             <p className="mt-5 rounded-xl bg-indigo-50 px-4 py-3 text-sm text-indigo-700">
               {complete
                 ? subLevel === LEVELS_PER_TIER && tier === "basic"
-                  ? "Congratulations! You are eligible for Intermediate level!"
+                  ? `Congratulations! You are eligible for Intermediate level! (${formatTime(elapsedSeconds)})`
                   : subLevel === LEVELS_PER_TIER && tier === "intermediate"
-                    ? "Congratulations! You are eligible for Hard level!"
+                    ? `Congratulations! You are eligible for Hard level! (${formatTime(elapsedSeconds)})`
                     : subLevel === LEVELS_PER_TIER && tier === "hard"
-                      ? "Congratulations! You are a Word Search Master!"
-                      : `Congratulations! Your ${ordinal(subLevel)} level complete!`
+                      ? `Congratulations! You are a Word Search Master! (${formatTime(elapsedSeconds)})`
+                      : `Congratulations! Your ${ordinal(subLevel)} level complete! (${formatTime(elapsedSeconds)})`
                 : message}
             </p>
           </div>
